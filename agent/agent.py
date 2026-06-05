@@ -38,15 +38,15 @@ Diretrizes:
 """
 
 
-def _build_server_params() -> StdioServerParameters:
-    # Prefer the installed entry-point script; fall back to `python -m`
+def _build_server_params(pipedrive_key: str) -> StdioServerParameters:
+    env = {**os.environ, "PIPEDRIVE_API_KEY": pipedrive_key}
     cmd = shutil.which("pipedrive-mcp")
     if cmd:
-        return StdioServerParameters(command=cmd, args=[], env={**os.environ})
+        return StdioServerParameters(command=cmd, args=[], env=env)
     return StdioServerParameters(
         command=sys.executable,
         args=["-m", "pipedrive_mcp"],
-        env={**os.environ},
+        env=env,
     )
 
 
@@ -58,14 +58,14 @@ class PipedriveAgent:
     def clear_history(self, chat_id: int):
         self.conversations[chat_id] = []
 
-    async def chat(self, chat_id: int, message: str) -> str:
+    async def chat(self, chat_id: int, message: str, pipedrive_key: str) -> str:
         if chat_id not in self.conversations:
             self.conversations[chat_id] = []
 
         self.conversations[chat_id].append({"role": "user", "content": message})
         messages = list(self.conversations[chat_id])
 
-        async with stdio_client(_build_server_params()) as (read, write):
+        async with stdio_client(_build_server_params(pipedrive_key)) as (read, write):
             async with ClientSession(read, write) as session:
                 await session.initialize()
 
@@ -80,13 +80,9 @@ class PipedriveAgent:
                 ]
                 logger.info("MCP conectado — %d ferramentas", len(tools))
 
-                final_text = await _run_agent_loop(
-                    self.client, messages, tools, session
-                )
+                final_text = await _run_agent_loop(self.client, messages, tools, session)
 
-        self.conversations[chat_id].append(
-            {"role": "assistant", "content": final_text}
-        )
+        self.conversations[chat_id].append({"role": "assistant", "content": final_text})
         return final_text
 
 
