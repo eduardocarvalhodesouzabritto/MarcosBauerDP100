@@ -1,4 +1,3 @@
-import contextlib
 import logging
 import sys
 from typing import Any
@@ -36,47 +35,19 @@ Diretrizes:
 - Se houver mais de um resultado possível, liste as opções e peça confirmação
 """
 
+_SERVER_PARAMS = StdioServerParameters(
+    command=sys.executable,
+    args=["-m", "pipedrive_mcp"],
+)
+
 
 class PipedriveAgent:
     def __init__(self):
-        self._exit_stack = contextlib.AsyncExitStack()
-        self.session: ClientSession | None = None
-        self.tools: list[dict] = []
         self.conversations: dict[int, list[dict]] = {}
         self.client = anthropic.AsyncAnthropic()
 
-    async def start(self):
-        server_params = StdioServerParameters(
-            command=sys.executable,
-            args=["-m", "pipedrive_mcp"],
-        )
-        read, write = await self._exit_stack.enter_async_context(stdio_client(server_params))
-        self.session = await self._exit_stack.enter_async_context(ClientSession(read, write))
-        await self.session.initialize()
-
-        result = await self.session.list_tools()
-        self.tools = [
-            {
-                "name": t.name,
-                "description": t.description or "",
-                "input_schema": t.inputSchema,
-            }
-            for t in result.tools
-        ]
-        logger.info("MCP Pipedrive conectado — %d ferramentas disponíveis", len(self.tools))
-
-    async def stop(self):
-        await self._exit_stack.aclose()
-
     def clear_history(self, chat_id: int):
         self.conversations[chat_id] = []
-
-    async def _call_tool(self, name: str, arguments: dict[str, Any]) -> str:
-        result = await self.session.call_tool(name, arguments)
-        return "\n".join(
-            block.text if hasattr(block, "text") else str(block)
-            for block in result.content
-        )
 
     async def chat(self, chat_id: int, message: str) -> str:
         if chat_id not in self.conversations:
@@ -85,38 +56,73 @@ class PipedriveAgent:
         self.conversations[chat_id].append({"role": "user", "content": message})
         messages = list(self.conversations[chat_id])
 
-        while True:
-            response = await self.client.messages.create(
-                model="claude-sonnet-4-6",
-                max_tokens=4096,
-                system=SYSTEM_PROMPT,
-                tools=self.tools,
-                messages=messages,
+        async with stdio_client(_SERVER_PARAMS) as (read, write):
+            async with ClientSession(read, write) as session:
+                await session.initialize()
+
+                result = await session.list_tools()
+                tools = [
+                    {
+                        "name": t.name,
+                        "description": t.description or "",
+                        "input_schema": t.inputSchema,
+                    }
+                    for t in result.tools
+                ]
+                logger.info("MCP conectado — %d ferramentas", len(tools))
+
+                final_text = await _run_agent_loop(
+                    self.client, messages, tools, session
+                )
+
+        self.conversations[chat_id].append(
+            {"role": "assistant", "content": final_text}
+        )
+        return final_text
+
+
+async def _run_agent_loop(
+    client: anthropic.AsyncAnthropic,
+    messages: list[dict],
+    tools: list[dict],
+    session: ClientSession,
+) -> str:
+    while True:
+        response = await client.messages.create(
+            model="claude-sonnet-4-6",
+            max_tokens=4096,
+            system=SYSTEM_PROMPT,
+            tools=tools,
+            messages=messages,
+        )
+
+        if response.stop_reason == "tool_use":
+            messages.append({"role": "assistant", "content": response.content})
+
+            tool_results = []
+            for block in response.content:
+                if block.type == "tool_use":
+                    logger.info("Ferramenta: %s | args: %s", block.name, block.input)
+                    result_text = await _call_tool(session, block.name, block.input)
+                    tool_results.append({
+                        "type": "tool_result",
+                        "tool_use_id": block.id,
+                        "content": result_text,
+                    })
+
+            messages.append({"role": "user", "content": tool_results})
+
+        else:
+            return "\n".join(
+                block.text
+                for block in response.content
+                if hasattr(block, "text")
             )
 
-            if response.stop_reason == "tool_use":
-                messages.append({"role": "assistant", "content": response.content})
 
-                tool_results = []
-                for block in response.content:
-                    if block.type == "tool_use":
-                        logger.info("Ferramenta: %s | args: %s", block.name, block.input)
-                        result_text = await self._call_tool(block.name, block.input)
-                        tool_results.append({
-                            "type": "tool_result",
-                            "tool_use_id": block.id,
-                            "content": result_text,
-                        })
-
-                messages.append({"role": "user", "content": tool_results})
-
-            else:
-                final_text = "\n".join(
-                    block.text
-                    for block in response.content
-                    if hasattr(block, "text")
-                )
-                self.conversations[chat_id].append(
-                    {"role": "assistant", "content": final_text}
-                )
-                return final_text
+async def _call_tool(session: ClientSession, name: str, arguments: dict[str, Any]) -> str:
+    result = await session.call_tool(name, arguments)
+    return "\n".join(
+        block.text if hasattr(block, "text") else str(block)
+        for block in result.content
+    )

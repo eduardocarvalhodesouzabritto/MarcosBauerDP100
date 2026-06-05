@@ -77,16 +77,6 @@ def _split_message(text: str, limit: int = 4000) -> list[str]:
     return chunks
 
 
-async def post_init(application: Application):
-    await agent.start()
-    logger.info("Agente Pipedrive pronto.")
-
-
-async def post_shutdown(application: Application):
-    await agent.stop()
-    logger.info("Agente encerrado.")
-
-
 def main():
     token = os.environ.get("TELEGRAM_BOT_TOKEN")
     if not token:
@@ -95,8 +85,6 @@ def main():
     app = (
         Application.builder()
         .token(token)
-        .post_init(post_init)
-        .post_shutdown(post_shutdown)
         .build()
     )
 
