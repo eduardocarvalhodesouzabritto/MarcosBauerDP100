@@ -1,4 +1,6 @@
 import logging
+import os
+import shutil
 import sys
 from typing import Any
 
@@ -35,10 +37,17 @@ Diretrizes:
 - Se houver mais de um resultado possível, liste as opções e peça confirmação
 """
 
-_SERVER_PARAMS = StdioServerParameters(
-    command=sys.executable,
-    args=["-m", "pipedrive_mcp"],
-)
+
+def _build_server_params() -> StdioServerParameters:
+    # Prefer the installed entry-point script; fall back to `python -m`
+    cmd = shutil.which("pipedrive-mcp")
+    if cmd:
+        return StdioServerParameters(command=cmd, args=[], env={**os.environ})
+    return StdioServerParameters(
+        command=sys.executable,
+        args=["-m", "pipedrive_mcp"],
+        env={**os.environ},
+    )
 
 
 class PipedriveAgent:
@@ -56,7 +65,7 @@ class PipedriveAgent:
         self.conversations[chat_id].append({"role": "user", "content": message})
         messages = list(self.conversations[chat_id])
 
-        async with stdio_client(_SERVER_PARAMS) as (read, write):
+        async with stdio_client(_build_server_params()) as (read, write):
             async with ClientSession(read, write) as session:
                 await session.initialize()
 
