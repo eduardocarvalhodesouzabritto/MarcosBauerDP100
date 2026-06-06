@@ -40,14 +40,11 @@ Diretrizes:
 
 def _build_server_params(pipedrive_key: str) -> StdioServerParameters:
     env = {**os.environ, "PIPEDRIVE_API_KEY": pipedrive_key}
-    cmd = shutil.which("pipedrive-mcp")
-    if cmd:
-        return StdioServerParameters(command=cmd, args=[], env=env)
-    return StdioServerParameters(
-        command=sys.executable,
-        args=["-m", "pipedrive_mcp"],
-        env=env,
-    )
+    # Use the pipedrive-mcp script from the same venv as this Python process,
+    # guaranteeing the correct path regardless of systemd's PATH.
+    venv_bin = os.path.dirname(sys.executable)
+    cmd = os.path.join(venv_bin, "pipedrive-mcp")
+    return StdioServerParameters(command=cmd, args=[], env=env)
 
 
 class PipedriveAgent:
